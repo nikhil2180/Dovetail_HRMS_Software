@@ -8,7 +8,7 @@
   <groupId>HRMS</groupId>
   <artifactId>HRMS</artifactId> 
   <version>0.0.1-SNAPSHOT</version>
-  <packaging>pom</packaging>
+  <packaging>war</packaging>
   
   <dependencies>
     <!-- Dependency 1: JSON library -->

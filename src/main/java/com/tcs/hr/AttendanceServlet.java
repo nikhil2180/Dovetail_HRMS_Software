@@ -2,6 +2,13 @@ package com.tcs.hr;
 
 import java.io.IOException;
 
+import com.itextpdf.text.Document;
+import com.itextpdf.text.DocumentException;
+import com.itextpdf.text.Element;
+import com.itextpdf.text.Font;
+import com.itextpdf.text.Paragraph;
+import com.itextpdf.text.pdf.PdfPTable;
+import com.itextpdf.text.pdf.PdfWriter;
 import com.tcs.hr.LoginServlet;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
@@ -14,6 +21,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -24,8 +32,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Vector;
 
 import javax.servlet.ServletException;
+import javax.servlet.ServletOutputStream;
 import javax.servlet.annotation.WebServlet;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -51,12 +61,40 @@ public class AttendanceServlet extends HttpServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
        
     	HttpSession session = request.getSession();
-        String empid = (String) session.getAttribute("empid");
+        //String empid = (String) session.getAttribute("empid");
 
         boolean isApiRequest = "XMLHttpRequest".equals(request.getHeader("X-Requested-With"));    //mention header 
-        JSONObject jsonResponse = new JSONObject();           //create object of an api
+                   //create object of an api
         
-        if (empid == null) {
+        
+        String authHeader =request.getHeader("Authorization");
+        String token=null;
+        
+        if (authHeader != null && authHeader.startsWith("Bearer "))     //extract token from header 
+        {
+            token = authHeader.substring(7); // Remove "Bearer " prefix
+        }
+        
+        if(token==null)
+        {
+        	 token=(String) session.getAttribute("token");
+        }
+        
+        JSONObject jsonResponse = new JSONObject();
+        
+        if (token == null || token.isEmpty()) {
+            jsonResponse.put("status", "error");
+            jsonResponse.put("message", "Missing token");
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.getWriter().write(jsonResponse.toString());
+            return;
+        }
+        
+        Map<String, String> claims = claim(token);
+    	//String username1=claims.get("username");
+    	String empId=claims.get("empId");
+        
+        if (empId == null) {
             if (isApiRequest) {
                 jsonResponse.put("status", "error");
                 jsonResponse.put("message", "User not logged in.");
@@ -64,7 +102,9 @@ public class AttendanceServlet extends HttpServlet {
                 response.setContentType("application/json");
                 response.setCharacterEncoding("UTF-8");
                 response.getWriter().write(jsonResponse.toString());
-            } else {
+            } 
+            else
+            {
                 response.sendRedirect("login.jsp");
             }
             return;
@@ -78,7 +118,7 @@ public class AttendanceServlet extends HttpServlet {
             PreparedStatement ps = con.prepareStatement(
                 "SELECT u.username, attendance.* FROM users u JOIN attendance ON u.empId = attendance.empId WHERE u.empId = ?");
             
-            ps.setString(1, empid);
+            ps.setString(1, empId);
             ResultSet rs = ps.executeQuery();
 
             JSONArray attendanceRecords = new JSONArray(); 
@@ -140,7 +180,7 @@ public class AttendanceServlet extends HttpServlet {
             }
         }
     }
-    
+//------------------------------------------------------------------------------------------------------------  
 	    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
 	        
 	        HttpSession session = request.getSession();
@@ -157,7 +197,11 @@ public class AttendanceServlet extends HttpServlet {
 	        if (authHeader != null && authHeader.startsWith("Bearer ")) 
 	        {
 	            token = authHeader.substring(7); // Remove "Bearer " prefix
-	            
+	        }
+
+	        if(token==null )
+	        {
+	        	 token=(String) session.getAttribute("token");
 	        }
 	
 	        JSONObject jsonResponse = new JSONObject();
@@ -179,6 +223,7 @@ public class AttendanceServlet extends HttpServlet {
         	
         	System.out.println(username1);
         	System.out.println(empId);
+        	
 	        if (username1 == null) 
 	        {
 	            if (isApiRequest) {
@@ -308,111 +353,87 @@ public class AttendanceServlet extends HttpServlet {
 	            else if ("viewstatus".equals(action)) 
 	            {
 	                System.out.println("view status is called");
-	                
+
 	                LocalDate today = LocalDate.now();
 	                LocalDateTime startOfDay = today.atStartOfDay();
 	                LocalDateTime endOfDay = today.atTime(LocalTime.MAX);
 	                Timestamp startTimestamp = Timestamp.valueOf(startOfDay);
 	                Timestamp endTimestamp = Timestamp.valueOf(endOfDay);
-	
-	                // Fetch records for the current day
-	                PreparedStatement ps = con.prepareStatement("SELECT sign_in_time, sign_out_time, location, sign_out_location FROM attendance where user_id = (SELECT id FROM users WHERE username = ?) AND sign_in_time BETWEEN ? AND ?");
-	                
-	                //PreparedStatement ps = con.prepareStatement("SELECT sign_in_time, sign_out_time FROM attendance where user_id = (SELECT id FROM users WHERE username = ?) AND sign_in_time BETWEEN ? AND ?");
-	
+
+	                // Fetch ONLY today's records
+	                List<AttendanceRecord> dailyRecords = new ArrayList<>();
+
+	                PreparedStatement ps = con.prepareStatement(
+	                    "SELECT sign_in_time, sign_out_time, location, sign_out_location " +
+	                    "FROM attendance " +
+	                    "WHERE user_id = (SELECT id FROM users WHERE username = ?) " +
+	                    "AND sign_in_time BETWEEN ? AND ?"
+	                );
 	                ps.setString(1, username1);
 	                ps.setTimestamp(2, startTimestamp);
 	                ps.setTimestamp(3, endTimestamp);
-	
+
 	                ResultSet rs = ps.executeQuery();
-	
-	                List<AttendanceRecord> records = new ArrayList<>();
 	                long totalDailyMillis = 0;
+
 	                while (rs.next()) {
 	                    AttendanceRecord record = new AttendanceRecord();
 	                    record.setSignInTime(rs.getTimestamp("sign_in_time"));
 	                    record.setSignOutTime(rs.getTimestamp("sign_out_time"));
 	                    record.setLocation(rs.getString("location"));
 	                    record.setSignOutLocation(rs.getString("sign_out_location"));
-	
-	                    System.out.println(rs.getTimestamp("sign_in_time"));
-	                    System.out.println(rs.getTimestamp("sign_out_time"));
-	                    
+
 	                    if (record.getSignInTime() != null && record.getSignOutTime() != null) {
 	                        totalDailyMillis += record.getSignOutTime().getTime() - record.getSignInTime().getTime();
 	                    }
-	
-	                    records.add(record);
+
+	                    dailyRecords.add(record); // ✅ Store only today's records
 	                }
-	
-	                // Convert totalDailyMillis to hours, minutes, and seconds
-	                long totalDailySeconds = totalDailyMillis / 1000;
-	                long dailyHours = totalDailySeconds / 3600;
-	                long dailyMinutes = (totalDailySeconds % 3600) / 60;
-	                long dailySeconds = totalDailySeconds % 60;
-	                String totalDailyTimeFormatted = String.format("%02d:%02d:%02d", dailyHours, dailyMinutes, dailySeconds);
-	
-	                // Fetch records for the current month
-	                LocalDate firstDayOfMonth = today.withDayOfMonth(1);
-	                LocalDate lastDayOfMonth = today.withDayOfMonth(today.lengthOfMonth());
-	                Timestamp startOfMonthTimestamp = Timestamp.valueOf(firstDayOfMonth.atStartOfDay());
-	                Timestamp endOfMonthTimestamp = Timestamp.valueOf(lastDayOfMonth.atTime(LocalTime.MAX));
-	
-	                ps = con.prepareStatement("SELECT sign_in_time, sign_out_time, location, sign_out_location FROM attendance WHERE user_id = (SELECT id FROM users WHERE username = ?) AND sign_in_time BETWEEN ? AND ?");
-	                ps.setString(1, username1);
-	                ps.setTimestamp(2, startOfMonthTimestamp);
-	                ps.setTimestamp(3, endOfMonthTimestamp);
-	                rs = ps.executeQuery();
-	
-	                long totalMonthlyMillis = 0;
-	                while (rs.next()) {
-	                    Timestamp signInTime = rs.getTimestamp("sign_in_time");
-	                    Timestamp signOutTime = rs.getTimestamp("sign_out_time");
-	
-	                    if (signInTime != null && signOutTime != null) {
-	                        totalMonthlyMillis += signOutTime.getTime() - signInTime.getTime();
-	                    }
-	                }
-	
-	                // Convert totalMonthlyMillis to hours, minutes, and seconds
-	                long totalMonthlySeconds = totalMonthlyMillis / 1000;
-	                long monthlyHours = totalMonthlySeconds / 3600;
-	                long monthlyMinutes = (totalMonthlySeconds % 3600) / 60;
-	                long monthlySeconds = totalMonthlySeconds % 60;
-	                String totalMonthlyTimeFormatted = String.format("%02d:%02d:%02d", monthlyHours, monthlyMinutes, monthlySeconds);
-	
-	                //String token = (String) session.getAttribute("token");
-	                
+
+	                // Convert total time worked today into HH:mm:ss format
+	                String totalDailyTimeFormatted = formatTime(totalDailyMillis);
+
+	                // Send response (only today's records)
 	                if (isApiRequest) {
 	                    jsonResponse.put("status", "success");
-	                    jsonResponse.put("attendanceRecords", records);
+
+	                    JSONArray attendanceArray = new JSONArray();    //declaring an array
+	                    
+	                    for (AttendanceRecord record : dailyRecords) 
+	                    {
+	                        JSONObject recordJson = new JSONObject();
+	                        
+	                        recordJson.put("signInTime", record.getSignInTime() != null ? record.getSignInTime().toString() : JSONObject.NULL);
+	                        recordJson.put("location", record.getLocation() != null ? record.getLocation() : JSONObject.NULL);
+	                        recordJson.put("signOutTime", record.getSignOutTime() != null ? record.getSignOutTime().toString() : JSONObject.NULL);
+	                        recordJson.put("signOutLocation", record.getSignOutLocation() != null ? record.getSignOutLocation() : JSONObject.NULL);
+	                        attendanceArray.put(recordJson);
+	                    }
+
+	                    jsonResponse.put("attendanceRecords", attendanceArray);
 	                    jsonResponse.put("totalDailyTime", totalDailyTimeFormatted);
-	                    jsonResponse.put("totalMonthlyTime", totalMonthlyTimeFormatted);
 	                    jsonResponse.put("token", token);
+
 	                    response.setStatus(HttpServletResponse.SC_OK);
 	                    response.setContentType("application/json");
 	                    response.setCharacterEncoding("UTF-8");
 	                    response.getWriter().write(jsonResponse.toString());
-	                    response.getWriter().flush(); // Ensure the response is actually sent
-	                    response.getWriter().close(); // Close the writer
-	                }
-	                else {
-	                    // Set attributes for the JSP page
-	                    request.setAttribute("attendanceRecords", records);
+	                    response.getWriter().flush();
+	                    response.getWriter().close();
+	                } else {
+	                    request.setAttribute("attendanceRecords", dailyRecords);
 	                    request.setAttribute("totalDailyTime", totalDailyTimeFormatted);
-	                    request.setAttribute("totalMonthlyTime", totalMonthlyTimeFormatted);
-	                    
+
 	                    request.getRequestDispatcher("status.jsp").forward(request, response);
 	                }
 	                return;
 	            }
-	
+
 	//--------------------------------------------------------------------------------------------------
-	           else if ("downloadReport".equals(action)) 
+	            else if ("downloadReport".equals(action)) 
 	            {
 	                String yearMonth = request.getParameter("yearMonth");
-	                
-	                // Check if the yearMonth parameter is present
+
 	                if (yearMonth == null || yearMonth.isEmpty()) {
 	                    if (isApiRequest) {
 	                        jsonResponse.put("status", "error");
@@ -428,51 +449,109 @@ public class AttendanceServlet extends HttpServlet {
 	                    }
 	                    return;
 	                }
-	
+
 	                YearMonth ym = YearMonth.parse(yearMonth);
-	
 	                LocalDate startDate = ym.atDay(1);
 	                LocalDate endDate = ym.atEndOfMonth();
 	                Timestamp startTimestamp = Timestamp.valueOf(startDate.atStartOfDay());
 	                Timestamp endTimestamp = Timestamp.valueOf(endDate.atTime(LocalTime.MAX));
-	
-	                PreparedStatement ps = con.prepareStatement("SELECT sign_in_time, sign_out_time, location FROM attendance WHERE user_id = (SELECT id FROM users WHERE username = ?) AND sign_in_time BETWEEN ? AND ?");
-	                ps.setString(1, username1);
-	                ps.setTimestamp(2, startTimestamp);
-	                ps.setTimestamp(3, endTimestamp);
-	                ResultSet rs = ps.executeQuery();
-	
-	                List<AttendanceRecord> records = new ArrayList<>();
-	                while (rs.next()) {
-	                    AttendanceRecord record = new AttendanceRecord();
-	                    record.setSignInTime(rs.getTimestamp("sign_in_time"));
-	                    record.setSignOutTime(rs.getTimestamp("sign_out_time"));
-	                    record.setLocation(rs.getString("location"));
-	                    records.add(record);
+
+	                PreparedStatement ps = null;
+	                ResultSet rs = null;
+
+	                try {
+	                    ps = con.prepareStatement(
+	                        "SELECT sign_in_time, sign_out_time, location, sign_out_location " +
+	                        "FROM attendance WHERE user_id = (SELECT id FROM users WHERE username = ?) " +
+	                        "AND sign_in_time BETWEEN ? AND ?"
+	                    );
+	                    ps.setString(1, username1);
+	                    ps.setTimestamp(2, startTimestamp);
+	                    ps.setTimestamp(3, endTimestamp);
+	                    rs = ps.executeQuery();
+
+	                    List<AttendanceRecord> records = new ArrayList<>();
+	                    while (rs.next()) {
+	                        AttendanceRecord record = new AttendanceRecord();
+	                        record.setSignInTime(rs.getTimestamp("sign_in_time"));
+	                        record.setSignOutTime(rs.getTimestamp("sign_out_time"));
+	                        record.setLocation(rs.getString("location"));
+	                        record.setSignOutLocation(rs.getString("sign_out_location"));
+	                        records.add(record);
+	                    }
+
+	                    // Set response headers for PDF
+	                    response.setContentType("application/pdf");
+	                    response.setHeader("Content-Disposition", "attachment; filename=attendance_report_" + yearMonth + ".pdf");
+
+	                    // Generate PDF
+	                    Document document = new Document();
+	                    ServletOutputStream outputStream = response.getOutputStream();
+	                    try {
+	                        PdfWriter.getInstance(document, outputStream);
+	                        document.open();
+	                        
+	                        // Title
+	                        Font titleFont = new Font(Font.FontFamily.HELVETICA, 16, Font.BOLD);
+	                        Paragraph title = new Paragraph("Attendance Report - " + yearMonth, titleFont);
+	                        title.setAlignment(Element.ALIGN_CENTER);
+	                        document.add(title);
+	                        document.add(new Paragraph("\n"));
+
+	                        // Table
+	                        PdfPTable table = new PdfPTable(4);
+	                        table.setWidthPercentage(100);
+	                        table.addCell("Sign In Time");
+	                        table.addCell("Sign Out Time");
+	                        table.addCell("Location");
+	                        table.addCell("Sign Out Location");
+
+	                        for (AttendanceRecord record : records) {
+	                            String signInTimeStr = record.getSignInTime() != null ? DATE_TIME_FORMATTER.format(record.getSignInTime().toLocalDateTime()) : "";
+	                            String signOutTimeStr = record.getSignOutTime() != null ? DATE_TIME_FORMATTER.format(record.getSignOutTime().toLocalDateTime()) : "";
+	                            table.addCell(signInTimeStr);
+	                            table.addCell(signOutTimeStr);
+	                            table.addCell(record.getLocation());
+	                            table.addCell(record.getSignOutLocation());
+	                        }
+
+	                        document.add(table);
+	                    } catch (DocumentException e) {
+	                        e.printStackTrace();
+	                    } finally {
+	                        if (document.isOpen()) {
+	                            document.close(); // Ensure document is closed properly
+	                        }
+	                        if (outputStream != null) {
+	                            outputStream.close();
+	                        }
+	                    }
+	                } catch (SQLException e) {
+	                    e.printStackTrace();
+	                } finally {
+	                    // Close resources properly
+	                    try {
+	                        if (rs != null) rs.close();
+	                        if (ps != null) ps.close();
+	                    } catch (SQLException e) {
+	                        e.printStackTrace();
+	                    }
 	                }
-	
-	                response.setContentType("text/csv");
-	                response.setHeader("Content-Disposition", "attachment;filename=attendance_report_" + yearMonth + ".csv");
-	                PrintWriter writer = response.getWriter();
-	                writer.println("Sign In Time,Sign Out Time,Location");
-	
-	                for (AttendanceRecord record : records) {
-	                    String signInTimeStr = record.getSignInTime() != null ? DATE_TIME_FORMATTER.format(record.getSignInTime().toLocalDateTime()) : "";
-	                    String signOutTimeStr = record.getSignOutTime() != null ? DATE_TIME_FORMATTER.format(record.getSignOutTime().toLocalDateTime()) : "";
-	                    writer.println(signInTimeStr + "," + signOutTimeStr + "," + record.getLocation());
-	                }
-	
-	                writer.flush();
-	                writer.close();
-	                return;
 	            }
-	            response.sendRedirect("dashboard.jsp");
-	        } 
-	        catch (Exception e) 
-	        {
-	            e.printStackTrace();
 	        }
-	        }
+	        catch (Exception e) {
+				e.printStackTrace();
+			}
+	    }
+
+//------------------------------------------------------------------------------------------------------
+	    private String formatTime(long millis) {
+            long totalSeconds = millis / 1000;
+            long hours = totalSeconds / 3600;
+            long minutes = (totalSeconds % 3600) / 60;
+            long seconds = totalSeconds % 60;
+            return String.format("%02d:%02d:%02d", hours, minutes, seconds);
+        }
     
 //----------------------------------------------------------------------------------------------------
 	    private Map<String, String> claim(String token) {
@@ -524,4 +603,5 @@ public class AttendanceServlet extends HttpServlet {
 
         return location;
     }
+//-------------------------------------------------------------------------------------------------------
 }

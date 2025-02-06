@@ -102,19 +102,21 @@ protected void doPost(HttpServletRequest request, HttpServletResponse response) 
             session.setAttribute("longitude", longitude);   
             session.setAttribute("location", location);       
             session.setAttribute("userId", userId); 
-            
+  //---------------------------------------------------------------------------------------------------          
             String token = Jwts.builder()            //to create a token 
                 .setSubject(username)
                 .claim("role", role)
                 .claim("empid", empId)
                 .claim("userid", userId)
                 .claim("username", username)
+                .claim("userid", userId)
                 .setIssuedAt(new Date())
                 .setExpiration(new Date(System.currentTimeMillis() + 86400000))  // 1 day expiration
                 .signWith(SECRET_KEY)  			// Default algorithm (HS256)
                 .compact();
 
-            //session.setAttribute("token", token);   //set the token in the session
+ //--------------------------------------------------------------------------------------------------------
+            session.setAttribute("token", token);   //set the token in the session
             System.out.println(token);
             
             if (isApiRequest) {
@@ -173,8 +175,12 @@ protected void doPost(HttpServletRequest request, HttpServletResponse response) 
                 response.sendRedirect("login.jsp?error=Invalid credentials");
             }
         }
-    } 
-    catch (Exception e) {
+        con.close();
+        rs.close();
+        ps.close();
+    }
+    catch (Exception e) 
+    {
         e.printStackTrace();
         jsonResponse.put("status", "error");
         jsonResponse.put("message", "An error occurred: " + e.getMessage());
